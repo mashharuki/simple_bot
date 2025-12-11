@@ -81,6 +81,98 @@ bun run check
 ```
 でフォーマットとLintを実行します。
 
+## Google Cloud Run へのデプロイ
+
+このBotは Google Cloud Run でサーバーレスに動作させることができます。
+
+### 1. 準備 (Google Cloud SDK)
+```bash
+# ログイン
+gcloud auth login
+
+# プロジェクト設定 (IDは適宜変更してください)
+gcloud config set project YOUR_PROJECT_ID
+```
+
+### 2. コンテナイメージの手動プッシュ
+`gcloud run deploy --source .` を使うと自動でビルドされますが、手動で Artifact Registry にプッシュしてデプロイする場合の手順です。
+
+1. **リポジトリの作成** (初回のみ)
+
+   ```bash
+   gcloud artifacts repositories create simple-bot-repo \
+       --repository-format=docker \
+       --location=asia-northeast1 \
+       --description="Docker repository"
+   ```
+
+2. **認証設定**
+
+   ```bash
+   gcloud auth configure-docker asia-northeast1-docker.pkg.dev
+   ```
+
+3. **ビルド & プッシュ**
+   ```bash
+   # 変数設定
+   export PROJECT_ID=$(gcloud config get-value project)
+   export REPO_NAME="simple-bot-repo"
+   export VERSION="latest"
+   export REGION="asia-northeast1"
+   export IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/simple-bot:${VERSION}"
+
+   # ビルド (プラットフォーム指定推奨)
+   docker build --platform linux/amd64 -t $IMAGE_NAME .
+
+   # プッシュ
+   docker push $IMAGE_NAME
+   ```
+
+### 3. Cloud Runへのデプロイ
+
+   ```bash
+   source .env
+   # 念の為環境変数が読み込まれているか確認
+   echo $TELEGRAM_BOT_TOKEN
+   echo $TELEGRAM_CHAT_ID
+
+   gcloud run deploy simple-bot \
+     --image $IMAGE_NAME \
+     --region $REGION \
+     --allow-unauthenticated \
+     --set-env-vars TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN",TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+   ```
+
+### 4. 注意点
+- Cloud RunはリクエストがないとCPUを割り当てない設定がデフォルトですが、このBotは `setInterval` でループ監視を行っています。
+- **重要**: 常に監視させたい場合は、Cloud Runのサービスの編集で **「CPUを常に割り当てる (CPU always allocated)」** 設定を有効にしてください。
+- または、`src/config.ts` の `DISABLE_LOOP=true` を設定し、Cloud Scheduler から定期的に `/check` エンドポイントを叩く構成にすると、よりサーバーレス的でコスト効率が良くなります。
+
+## お掃除 (削除方法)
+
+### Cloud Run サービスの削除
+
+```bash
+gcloud run services delete simple-bot --region $REGION
+```
+
+### Artifact Registry のイメージ削除
+
+特定のイメージタグのみ削除する場合:
+
+```bash
+gcloud artifacts docker images delete $IMAGE_NAME
+```
+
+### Artifact Registry リポジトリごとの削除
+
+リポジトリ自体の削除（中のイメージも全て消えます）:
+
+```bash
+gcloud artifacts repositories delete simple-bot-repo \
+    --location=$REGION
+```
+
 ## 用語集 (初心者向け)
 
 ### 📈 ロングポジション (買い)
