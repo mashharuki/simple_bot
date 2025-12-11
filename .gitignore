@@ -1,0 +1,4 @@
+dist
+.npm-cache
+node_modules
+.env

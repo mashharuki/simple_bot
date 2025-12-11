@@ -1,0 +1,29 @@
+{
+  "name": "simple_bot",
+  "version": "1.0.0",
+  "description": "HyperliquidのFunding Rate (FR) を監視し、設定した閾値 (デフォルト: 1時間あたり ±0.01%) を超えた場合にTelegramで通知するPython製Botです。",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "check": "bunx biome check --write src",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@hono/node-server": "^1.19.7",
+    "dotenv": "^17.2.3",
+    "hono": "^4.10.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
+    "@types/node": "^24.10.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

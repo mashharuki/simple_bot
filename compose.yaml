@@ -1,7 +1,10 @@
 services:
   app:
+    # Dockerfileの場所を指定
     build: .
+    # ボリュームマウントを指定
     volumes:
       - .:/app
+    # 環境変数用のファイルを指定
     env_file:
       - .env
