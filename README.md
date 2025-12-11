@@ -173,6 +173,69 @@ gcloud artifacts repositories delete simple-bot-repo \
     --location=$REGION
 ```
 
+## Infrastructure as Code (Terraform)
+
+Terraform を使って、上記のリソース (Artifact Registry と Cloud Run) を一括管理することも可能です。
+
+### 1. 準備
+
+Terraform がインストールされていること。
+
+### 2. 変数設定
+
+以下の2通りの方法があります。
+
+**A. `terraform.tfvars` ファイルを使う (推奨)**
+
+`terraform/terraform.tfvars` ファイルを作成し、自身の値を設定してください (このファイルはgit管理外にしてください)。
+
+```hcl
+project_id         = "YOUR_PROJECT_ID"
+telegram_bot_token = "YOUR_BOT_TOKEN"
+telegram_chat_id   = "YOUR_CHAT_ID"
+```
+
+**B. 環境変数を使う**
+
+`TF_VAR_` というプレフィックスを付けることで、環境変数から読み込むことも可能です。CI/CD等で便利です。
+
+```bash
+export TF_VAR_project_id="YOUR_PROJECT_ID"
+export TF_VAR_telegram_bot_token="YOUR_BOT_TOKEN"
+export TF_VAR_telegram_chat_id="YOUR_CHAT_ID"
+```
+
+### 3. Apply
+```bash
+cd terraform
+# 権限を付与
+gcloud auth application-default login 
+# 初期化
+terraform init
+# リソースをデプロイ(1回目でコンテナリポジトリを作成)
+terraform apply
+# コンテナイメージをプッシュする
+docker push $IMAGE_NAME
+# リソースをデプロイ(2回目でCloud Runをデプロイ)
+terraform apply
+# リソースを削除
+terraform destroy
+```
+
+デプロイ時以下のようになればOK!
+
+```bash
+Apply complete! Resources: 2 added, 0 changed, 1 destroyed.
+```
+
+デストロイ時以下のようになればOK!
+
+```bash
+Destroy complete! Resources: 3 destroyed.
+```
+
+注意: Cloud Runのリソース作成には、事前にDockerイメージがArtifact Registryに存在するか、変数の `image_name` が有効なパスを指している必要があります。初回は手動プッシュが必要な場合があります。
+
 ## 用語集 (初心者向け)
 
 ### 📈 ロングポジション (買い)

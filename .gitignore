@@ -2,3 +2,9 @@ dist
 .npm-cache
 node_modules
 .env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
