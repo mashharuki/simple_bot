@@ -37,12 +37,20 @@ HyperliquidのFunding Rate (FR) を監視し、設定した閾値 (デフォル�
    これでChat IDが取得できます。
 
 ### 2. Dockerで起動 (推奨)
+
 ```bash
-docker compose up -d --build
+docker compose up -d 
 ```
+
 ログを確認するには:
 ```bash
 docker compose logs -f
+```
+
+コンテナを停止＆削除するには
+
+```bash
+docker compose down --volumes
 ```
 
 ### 3. ローカル (Bun) で起動

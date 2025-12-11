@@ -12,7 +12,9 @@ COPY tsconfig.json ./
 # But standard practice for type checking:
 RUN bunx tsc --noEmit
 
-FROM oven/bun:distroless
+# Production stage
+# Use alpine for a balance of size and compatibility (has shell)
+FROM oven/bun:1-alpine
 
 WORKDIR /app
 
@@ -21,4 +23,5 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/tsconfig.json ./
 
-CMD ["bun", "run", "src/index.ts"]
+# Run via npm script 'start' to ensure consistent behavior
+CMD ["bun", "run", "start"]
