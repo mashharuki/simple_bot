@@ -262,3 +262,58 @@ Destroy complete! Resources: 3 destroyed.
 ### 💧 Hyperliquid (ハイパーリキッド)
 このBotが監視対象としている取引所のことです。
 - **特徴**: ブロックチェーン上で動く次世代の取引所 (DEX) です。非常に動作が速く、多くのプロトレーダーも利用しています。
+
+## システムアーキテクチャ
+
+このプロジェクトの全体構成図です。Bunランタイム上でHonoサーバーが稼働し、定期実行されるスケジューラーがHyperliquidのAPIを監視します。
+
+```mermaid
+graph TD
+    Scheduler["Scheduler (setInterval)"] -- Trigger --> Monitor["Monitor Logic"]
+    Monitor -- 1. Fetch Rates --> Hyperliquid["Hyperliquid API"]
+    Hyperliquid -- Rates Data --> Monitor
+    Monitor -- 2. Check Threshold --> Analyzer["Analysis Logic"]
+    Analyzer -- Abnormal Rates Detected --> Notifier["Notifier Service"]
+    Notifier -- 3. Send Alert --> Telegram["Telegram API"]
+    Telegram -- Push Notification --> User((User))
+    
+    User -- Check Status (GET /) --> WebServer["Web Server (Hono)"]
+```
+
+## 処理シーケンス
+
+監視処理の内部フローです。
+
+```mermaid
+sequenceDiagram
+    participant Scheduler
+    participant Monitor
+    participant Hyperliquid as Hyperliquid API
+    participant Notifier
+    participant Telegram as Telegram API
+
+    loop Every CHECK_INTERVAL
+        Scheduler->>Monitor: runCheck()
+        Monitor->>Hyperliquid: fetchFundingRates()
+        Hyperliquid-->>Monitor: RateInfo[]
+        Monitor->>Monitor: checkThresholds()
+        
+        alt Threshold Exceeded (異常値検知)
+            Monitor->>Notifier: formatMessage()
+            Notifier->>Telegram: sendMessage()
+            Telegram-->>Notifier: 200 OK
+        else Normal (正常)
+            Monitor->>Scheduler: No Action
+        end
+    end
+```
+
+## 技術スタック
+
+- **Runtime**: [Bun](https://bun.sh) (JavaScript Runtime)
+- **Language**: [TypeScript](https://www.typescriptlang.org/)
+- **Web Framework**: [Hono](https://hono.dev)
+- **Deployment**: Docker, Google Cloud Run
+- **External Services**:
+    - [Hyperliquid API](https://hyperliquid.xyz) (Market Data)
+    - [Telegram Bot API](https://core.telegram.org/bots/api) (Notifications)
