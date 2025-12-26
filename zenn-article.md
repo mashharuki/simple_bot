@@ -120,13 +120,16 @@ import { serve } from "@hono/node-server";
 
 const app = new Hono();
 
-app.get("/", (c) => c.text("Healthy"));
-app.get("/check", async (c) => {
-  await checkFundingRates();
-  return c.json({ status: "checked" });
+app.get("/", (c) => {
+  return c.text("Hyperliquid FR Bot is running 🤖");
 });
 
-serve({ fetch: app.fetch, port: config.port });
+app.get("/check", async (c) => {
+  const result = await runCheck();
+  return c.json(result);
+});
+
+serve({ fetch: app.fetch, port: CONFIG.PORT });
 ```
 
 わずか10行弱でAPIサーバーが構築できます!
@@ -163,54 +166,75 @@ Hyperliquid APIのレスポンス型を定義して、型安全性を確保し�
 interface UniverseItem {
   name: string;
   szDecimals: number;
+  maxLeverage: number;
+  onlyIsolated: boolean;
 }
 
 interface AssetCtx {
   funding: string;  // 注意: 数値ではなく文字列!
   openInterest: string;
   prevDayPx: string;
+  // ... その他のフィールド
 }
 
-async function fetchFundingRates(): Promise<RateInfo[]> {
+// アプリケーション内で扱うレート情報の型定義
+interface RateInfo {
+  name: string;      // 銘柄名
+  funding: number;   // Funding Rate (生の数値)
+  apr: number;       // 年率換算 (パーセント)
+}
+
+export async function fetchFundingRates(): Promise<RateInfo[]> {
   const response = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type: "metaAndAssetCtxs" }),
   });
 
-  const data = await response.json();
-  const universe: UniverseItem[] = data[0].universe;
-  const assetCtxs: AssetCtx[] = data[1];
+  const data = await response.json() as [
+    { universe: UniverseItem[] },
+    AssetCtx[],
+  ];
+  const universe = data[0].universe;
+  const assetCtxs = data[1];
 
-  // 両方のデータを結合して必要な情報を抽出
-  return universe.map((item, index) => ({
-    symbol: item.name,
-    fundingRate: Number.parseFloat(assetCtxs[index].funding),
-  }));
+  const rates: RateInfo[] = [];
+
+  for (let i = 0; i < universe.length; i++) {
+    const name = universe[i].name;
+    const fundingRaw = parseFloat(assetCtxs[i].funding || "0");
+
+    // APRを取得時に計算: Funding * 24 * 365 * 100
+    const apr = fundingRaw * 24 * 365 * 100;
+
+    rates.push({ name, funding: fundingRaw, apr });
+  }
+
+  return rates;
 }
 ```
 
 **学び:**
 - API仕様書をよく読む!数値型だと思っても文字列で返ってくることがある
 - `parseFloat()`で明示的に変換して型の一貫性を保つ
+- **APR計算をデータ取得時に行う**ことで、後続の処理がシンプルに
 
-### 2. Funding RateからAPRへの変換
+### 2. 閾値チェックとAPR変換
 
-Funding Rateは時給で表現されますが、それを年率(APR)に変換して分かりやすくします。
+Funding Rateを年率(APR)に変換し、閾値を超えたものだけをフィルタリングします。
 
 ```typescript:src/monitor.ts
-function checkThresholds(rates: RateInfo[]): RateInfo[] {
-  return rates
-    .filter((rate) => Math.abs(rate.fundingRate) >= config.frThreshold)
-    .map((rate) => ({
-      ...rate,
-      aprPercentage: rate.fundingRate * 24 * 365 * 100, // 時給 → 年率
-      hourlyPercentage: rate.fundingRate * 100,
-    }));
+// APR計算は fetchFundingRates() で実施済み
+export function checkThresholds(
+  rates: RateInfo[],
+  threshold: number,
+): RateInfo[] {
+  // 絶対値が閾値以上のものを抽出
+  return rates.filter((item) => Math.abs(item.funding) >= threshold);
 }
 ```
 
-**計算式:**
+**APR計算式:**
 ```
 APR = 時給FR × 24時間 × 365日 × 100(%)
 ```
@@ -220,46 +244,92 @@ APR = 時給FR × 24時間 × 365日 × 100(%)
 APR = 0.0001 × 24 × 365 × 100 = 87.6%
 ```
 
-### 3. リッチなTelegram通知
+**設計のポイント:**
+- APR計算を`fetchFundingRates()`で行うことで、関心の分離を実現
+- `checkThresholds()`はシンプルなフィルタリングに専念
+- 各関数が単一責任を持つことでテストしやすいコードに
 
-ただのテキストではなく、Markdownフォーマット + インラインボタンでリッチな通知を実現しています。
+### 3. 日本語対応のリッチなTelegram通知
+
+ただのテキストではなく、**日本語の解説付き** + Markdownフォーマット + インラインボタンでリッチな通知を実現しています。
+
+```typescript:src/monitor.ts
+export function formatMessage(abnormalRates: RateInfo[]): {
+  text: string;
+  buttons: { text: string; url: string }[][];
+} | null {
+  if (abnormalRates.length === 0) return null;
+
+  const lines = ["🚨 **金利(FR)アラート** 🚨\n"];
+  const buttons: { text: string; url: string }[][] = [];
+
+  for (const item of abnormalRates) {
+    const { name, funding, apr } = item;
+
+    // 初心者向けに、わかりやすい日本語で解説
+    const direction = funding > 0
+      ? "ロングポジションが多すぎます (買い優勢)"
+      : "ショートポジションが多すぎます (売り優勢)";
+    const icon = funding > 0 ? "📈" : "📉";
+
+    // パーセント表記に変換
+    const fundingPct = (funding * 100).toFixed(4);
+    const aprStr = apr.toFixed(2);
+
+    // 符号付きで表示
+    const fundingPctSigned = funding > 0 ? `+${fundingPct}` : fundingPct;
+    const aprSigned = apr > 0 ? `+${aprStr}` : aprStr;
+
+    lines.push(
+      `${icon} **${name}**\n` +
+      `   FR (1時間): \`${fundingPctSigned}%\`\n` +
+      `   年換算 (APR): \`${aprSigned}%\`\n` +
+      `   解説: ${direction}`,
+    );
+
+    // Hyperliquidの取引ページへのリンクボタン
+    buttons.push([{
+      text: `👉 ${name} を取引する (Hyperliquid)`,
+      url: `https://app.hyperliquid.xyz/trade/${name}`
+    }]);
+  }
+
+  return { text: lines.join("\n"), buttons };
+}
+```
 
 ```typescript:src/notifier.ts
-export async function sendNotification(rates: RateInfo[]) {
-  for (const rate of rates) {
-    const direction = rate.fundingRate > 0 ? "📈 Long Heavy" : "📉 Short Heavy";
-
-    const message = `
-*${direction}: ${rate.symbol}*
-APR: ${rate.aprPercentage?.toFixed(2)}%
-Hourly: ${rate.hourlyPercentage?.toFixed(4)}%
-    `.trim();
-
-    const keyboard = {
-      inline_keyboard: [[{
-        text: `Trade ${rate.symbol}`,
-        url: `https://app.hyperliquid.xyz/trade/${rate.symbol}`
-      }]]
+export async function sendTelegramMessage(
+  message: string,
+  options?: {
+    reply_markup?: {
+      inline_keyboard: { text: string; url: string }[][];
     };
+  },
+): Promise<boolean> {
+  const url = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const payload = {
+    chat_id: CONFIG.TELEGRAM_CHAT_ID,
+    text: message,
+    parse_mode: "Markdown",
+    ...options,
+  };
 
-    await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: config.telegramChatId,
-        text: message,
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      }),
-    });
-  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  return response.ok;
 }
 ```
 
 **学び:**
-- `parse_mode: "Markdown"`でテキスト装飾が可能
-- `reply_markup`でボタンを配置できる
-- Markdownの`*bold*`は有効だが、見出しやコードブロックは制限あり
+- **日本語で解説を添えることで初心者にも優しい通知に**
+- `parse_mode: "Markdown"`で`**太字**`や`` `コード` ``が使える
+- `reply_markup`のインラインボタンで直接アクションを促せる
+- 符号付き表示(`+87.6%`)で視覚的に方向性がわかりやすい
 
 ### 4. 環境変数の一元管理
 
@@ -268,39 +338,81 @@ Hourly: ${rate.hourlyPercentage?.toFixed(4)}%
 ```typescript:src/config.ts
 import "dotenv/config";
 
-export const config = {
-  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
-  telegramChatId: process.env.TELEGRAM_CHAT_ID || "",
-  frThreshold: Number.parseFloat(process.env.FR_THRESHOLD || "0.0001"),
-  checkIntervalSeconds: Number.parseInt(process.env.CHECK_INTERVAL_SECONDS || "300", 10),
-  port: Number.parseInt(process.env.PORT || "3000", 10),
-  disableLoop: process.env.DISABLE_LOOP === "true",
+export const CONFIG = {
+  // Telegram Bot Token (BotFatherから取得)
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || "",
+  // 通知送信先のチャットID (userinfobot等から取得)
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || "",
+  // FRの閾値。デフォルトは 0.0001 (0.01%)
+  FR_THRESHOLD: parseFloat(process.env.FR_THRESHOLD || "0.0001"),
+  // チェック間隔 (秒)。デフォルトは 300秒 (5分)
+  CHECK_INTERVAL_SECONDS: parseInt(
+    process.env.CHECK_INTERVAL_SECONDS || "300",
+    10,
+  ),
+  // サーバーのポート番号
+  PORT: parseInt(process.env.PORT || "3000", 10),
+  // ループ実行を無効化するかどうか (外部トリガーのみで動かす場合など)
+  DISABLE_LOOP: process.env.DISABLE_LOOP === "true",
 };
+
+// 起動時に警告を表示
+if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
+  console.warn(
+    "⚠️ Telegram Bot Token or Chat ID is missing. Notifications will be skipped.",
+  );
+}
 ```
 
 **学び:**
+- **CONSTという命名で設定値であることを明示**
 - 環境変数のデフォルト値を設定することで、開発時の利便性向上
 - 数値型の変数は`parseInt/parseFloat`で明示的に変換
 - `dotenv`でローカル開発時の`.env`ファイルサポート
+- **起動時に設定の検証を行い、問題を早期発見**
 
 ### 5. 柔軟なデプロイモード
 
 Cloud Schedulerとの連携を考慮して、ループの有効/無効を切り替えられるようにしています。
 
 ```typescript:src/index.ts
-// ループモード (常時監視)
-if (!config.disableLoop) {
-  console.log(`Starting funding rate monitor (interval: ${config.checkIntervalSeconds}s)`);
+async function runCheck() {
+  console.log("Fetching funding rates...");
+  const rates = await fetchFundingRates();
+  const abnormal = checkThresholds(rates, CONFIG.FR_THRESHOLD);
 
-  checkFundingRates(); // 初回実行
-
-  setInterval(() => {
-    checkFundingRates();
-  }, config.checkIntervalSeconds * 1000);
+  if (abnormal.length > 0) {
+    const result = formatMessage(abnormal);
+    if (result) {
+      await sendTelegramMessage(result.text, {
+        reply_markup: { inline_keyboard: result.buttons },
+      });
+    }
+    return { status: "abnormal_found", count: abnormal.length };
+  }
+  return { status: "ok", message: "No abnormal rates" };
 }
 
+function startLoop() {
+  if (CONFIG.DISABLE_LOOP) {
+    console.log("Loop is disabled via config.");
+    return;
+  }
+
+  console.log(`Starting monitoring loop. Interval: ${CONFIG.CHECK_INTERVAL_SECONDS}s`);
+
+  runCheck().catch(console.error); // 初回実行
+
+  setInterval(() => {
+    runCheck().catch(console.error);
+  }, CONFIG.CHECK_INTERVAL_SECONDS * 1000);
+}
+
+// ループを開始
+startLoop();
+
 // Serverは常に起動 (ヘルスチェック & 手動トリガー用)
-serve({ fetch: app.fetch, port: config.port });
+serve({ fetch: app.fetch, port: CONFIG.PORT });
 ```
 
 **デプロイパターン:**
@@ -309,6 +421,11 @@ serve({ fetch: app.fetch, port: config.port });
 |--------|------|------|
 | 常時監視 | `DISABLE_LOOP=false` | Docker Composeなど常時起動環境 |
 | Webhook | `DISABLE_LOOP=true` | Cloud Scheduler → `/check`エンドポイント |
+
+**学び:**
+- `runCheck()`関数でロジックを集約し、再利用可能に
+- エラーハンドリングを`.catch()`で実装
+- サーバーは常に起動することで、ヘルスチェックや手動トリガーに対応
 
 ## Terraformによるインフラ自動化
 
@@ -441,11 +558,17 @@ APIレスポンスの型定義により、以下のようなバグを防げま�
 
 ```typescript
 // ❌ 型定義なし - fundingが文字列だと気づかずハマる
-const apr = data.funding * 24 * 365; // NaNになる!
+const apr = assetCtx.funding * 24 * 365 * 100; // NaNになる!
 
 // ✅ 型定義あり - parseFloatで明示的に変換
-const apr = parseFloat(data.funding) * 24 * 365;
+const fundingRaw = parseFloat(assetCtx.funding || "0");
+const apr = fundingRaw * 24 * 365 * 100; // 正しく計算できる
 ```
+
+TypeScriptの型システムにより、以下のような恩恵を受けられます:
+- APIレスポンスの構造を明確に把握
+- プロパティ名のタイポを防止
+- リファクタリング時の変更漏れを検出
 
 ### 3. **関心の分離**
 
