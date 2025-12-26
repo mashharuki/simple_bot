@@ -37,48 +37,142 @@ https://github.com/mashharuki/simple_bot
 3. **Telegram**に年率換算(APR)と時給を含むリッチなメッセージを送信
 4. メッセージには取引ページへの直リンクボタンも付与
 
-### アーキテクチャ図
+### システムアーキテクチャ図
 
+全体のシステム構成を図で示します:
+
+```mermaid
+graph TB
+    subgraph "トリガー層"
+        Scheduler["Google Cloud Scheduler<br/>(オプション)"]
+        Timer["setInterval<br/>(常時監視モード)"]
+    end
+
+    subgraph "アプリケーション層 (Cloud Run / Docker)"
+        Server["Hono Web Server<br/>:3000"]
+        RunCheck["runCheck()<br/>メインロジック"]
+
+        subgraph "monitor.ts"
+            Fetch["fetchFundingRates()<br/>データ取得 & APR計算"]
+            Check["checkThresholds()<br/>閾値判定"]
+            Format["formatMessage()<br/>メッセージ整形"]
+        end
+
+        subgraph "notifier.ts"
+            Send["sendTelegramMessage()<br/>通知送信"]
+        end
+
+        subgraph "config.ts"
+            Config["CONFIG<br/>設定管理"]
+        end
+    end
+
+    subgraph "外部API層"
+        Hyperliquid["Hyperliquid API<br/>POST /info"]
+        Telegram["Telegram Bot API<br/>POST sendMessage"]
+    end
+
+    subgraph "ユーザー"
+        User["Telegramユーザー"]
+    end
+
+    Scheduler -->|"GET /check"| Server
+    Timer -->|"定期実行"| RunCheck
+    Server -->|"手動トリガー"| RunCheck
+
+    RunCheck --> Fetch
+    Fetch -->|"FR取得リクエスト"| Hyperliquid
+    Hyperliquid -->|"FR + メタデータ"| Fetch
+    Fetch --> Check
+    Check --> Format
+    Format --> Send
+    Send -->|"通知リクエスト"| Telegram
+    Telegram -->|"プッシュ通知"| User
+
+    Config -.->|"設定参照"| Fetch
+    Config -.->|"設定参照"| Send
+
+    style RunCheck fill:#e1f5ff
+    style Config fill:#fff4e1
+    style Hyperliquid fill:#ffe1e1
+    style Telegram fill:#e1ffe1
 ```
-┌─────────────────────────────────────────┐
-│ Google Cloud Scheduler (Optional)       │
-│ ┌─────────────────────────────────────┐ │
-│ │ 定期実行トリガー (5分ごと)          │ │
-│ └──────────────┬──────────────────────┘ │
-└────────────────┼────────────────────────┘
-                 │ HTTP GET /check
-                 ▼
-┌─────────────────────────────────────────┐
-│ Google Cloud Run (Server)               │
-│ ┌─────────────────────────────────────┐ │
-│ │ Hono Server (TypeScript)            │ │
-│ │ ┌─────────────────────────────────┐ │ │
-│ │ │ Monitor (monitor.ts)            │ │ │
-│ │ │  - fetchFundingRates()          │ │ │
-│ │ │  - checkThresholds()            │ │ │
-│ │ └──────────┬──────────────────────┘ │ │
-│ └────────────┼────────────────────────┘ │
-└──────────────┼──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│ Hyperliquid API                         │
-│ POST /info (metaAndAssetCtxs)           │
-└──────────────┬──────────────────────────┘
-               │ Funding Rate Data
-               ▼
-┌─────────────────────────────────────────┐
-│ Notifier (notifier.ts)                  │
-│  - formatMessage()                      │
-│  - sendTelegramMessage()                │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│ Telegram Bot API                        │
-│ POST sendMessage (Markdown + Buttons)   │
-└─────────────────────────────────────────┘
+
+**構成の特徴:**
+- 🔄 **2つのトリガーモード**: Cloud SchedulerまたはsetIntervalで実行可能
+- 🧩 **モジュラー設計**: 各機能が独立したファイルに分離
+- ⚙️ **設定の一元管理**: CONFIGで全体の振る舞いを制御
+
+## プロジェクト構造
+
+わずか328行のコードでどのように構成されているか、ファイル構造を可視化します:
+
+```mermaid
+graph TD
+    subgraph "プロジェクトルート"
+        Root["/"]
+
+        subgraph "ソースコード (src/)"
+            Config["config.ts<br/>📋 25行<br/>環境変数管理"]
+            Index["index.ts<br/>🚀 95行<br/>サーバー & ルーティング"]
+            Monitor["monitor.ts<br/>🔍 155行<br/>FR監視ロジック"]
+            Notifier["notifier.ts<br/>📢 53行<br/>Telegram通知"]
+        end
+
+        subgraph "インフラ (terraform/)"
+            Main["main.tf<br/>プロバイダー設定"]
+            CloudRun["cloud_run.tf<br/>Cloud Run & Registry"]
+            Vars["variables.tf<br/>変数定義"]
+        end
+
+        subgraph "設定ファイル"
+            Package["package.json<br/>依存関係 & スクリプト"]
+            Biome["biome.json<br/>コード品質設定"]
+            TSConfig["tsconfig.json<br/>TypeScript設定"]
+            Dockerfile["Dockerfile<br/>コンテナ定義"]
+            Compose["compose.yaml<br/>Docker Compose設定"]
+        end
+    end
+
+    Root --> Config
+    Root --> Index
+    Root --> Monitor
+    Root --> Notifier
+    Root --> Main
+    Root --> CloudRun
+    Root --> Vars
+    Root --> Package
+    Root --> Biome
+    Root --> TSConfig
+    Root --> Dockerfile
+    Root --> Compose
+
+    Index -.->|import| Config
+    Index -.->|import| Monitor
+    Index -.->|import| Notifier
+    Monitor -.->|import| Config
+    Notifier -.->|import| Config
+
+    style Config fill:#fff4e1
+    style Index fill:#e1f5ff
+    style Monitor fill:#ffe1e1
+    style Notifier fill:#e1ffe1
 ```
+
+**ファイルの役割:**
+
+| ファイル | 行数 | 責務 |
+|----------|------|------|
+| **config.ts** | 25行 | 環境変数の読み込みと型変換、設定の一元管理 |
+| **index.ts** | 95行 | Honoサーバー起動、ルーティング、スケジューラー管理 |
+| **monitor.ts** | 155行 | FR取得、APR計算、閾値チェック、メッセージ整形 |
+| **notifier.ts** | 53行 | Telegram API連携、通知送信 |
+| **合計** | **328行** | すべてのアプリケーションロジック |
+
+**依存関係の流れ:**
+- すべてのモジュールが`config.ts`を参照
+- `index.ts`が他のモジュールをオーケストレーション
+- 循環依存なしのクリーンな構造
 
 ## 技術スタック選定の理由
 
@@ -154,6 +248,109 @@ serve({ fetch: app.fetch, port: CONFIG.PORT });
   }
 }
 ```
+
+## 処理フローの詳細
+
+### シーケンス図: 異常検知から通知までの流れ
+
+実際の処理がどのように流れるのかを、シーケンス図で詳しく見てみましょう:
+
+```mermaid
+sequenceDiagram
+    participant Timer as タイマー/Scheduler
+    participant RunCheck as runCheck()
+    participant Monitor as monitor.ts
+    participant Hyperliquid as Hyperliquid API
+    participant Notifier as notifier.ts
+    participant Telegram as Telegram API
+    participant User as ユーザー
+
+    Timer->>RunCheck: 定期実行 (5分ごと)
+    activate RunCheck
+
+    RunCheck->>Monitor: fetchFundingRates()
+    activate Monitor
+    Monitor->>Hyperliquid: POST /info<br/>{type: "metaAndAssetCtxs"}
+    Hyperliquid-->>Monitor: [universe[], assetCtxs[]]
+    Note over Monitor: ループ処理で各銘柄を処理<br/>parseFloat(funding)<br/>APR = funding × 24 × 365 × 100
+    Monitor-->>RunCheck: RateInfo[] (全銘柄データ)
+    deactivate Monitor
+
+    RunCheck->>Monitor: checkThresholds(rates, 0.0001)
+    activate Monitor
+    Note over Monitor: Math.abs(funding) >= threshold<br/>でフィルタリング
+    Monitor-->>RunCheck: RateInfo[] (異常銘柄のみ)
+    deactivate Monitor
+
+    alt 異常値が検出された場合
+        RunCheck->>Monitor: formatMessage(abnormalRates)
+        activate Monitor
+        Note over Monitor: 日本語メッセージ作成<br/>符号付きAPR計算<br/>ボタンURL生成
+        Monitor-->>RunCheck: {text, buttons}
+        deactivate Monitor
+
+        RunCheck->>Notifier: sendTelegramMessage(text, options)
+        activate Notifier
+        Notifier->>Telegram: POST /sendMessage<br/>{chat_id, text, parse_mode, reply_markup}
+        Telegram-->>Notifier: {ok: true}
+        Telegram->>User: 📱 プッシュ通知
+        Notifier-->>RunCheck: true
+        deactivate Notifier
+
+        RunCheck-->>Timer: {status: "abnormal_found", count: N}
+    else 異常値なし
+        RunCheck-->>Timer: {status: "ok"}
+    end
+    deactivate RunCheck
+```
+
+**処理のポイント:**
+1. **データ取得と変換を一度に実施** - fetchFundingRates()でFR取得とAPR計算を同時に行う
+2. **段階的なフィルタリング** - 全データ → 異常値のみ → メッセージ整形という流れ
+3. **null安全** - 異常値がない場合はformatMessage()がnullを返し、通知をスキップ
+4. **非同期処理の連鎖** - async/awaitで可読性の高いコードを実現
+
+### データフロー図
+
+データがどのように変換されていくかを視覚化します:
+
+```mermaid
+graph LR
+    subgraph "1. API取得"
+        Raw["生データ<br/>funding: '0.0001' (string)"]
+    end
+
+    subgraph "2. 型変換 & 計算"
+        Parsed["パース済み<br/>funding: 0.0001 (number)<br/>apr: 87.6"]
+    end
+
+    subgraph "3. フィルタリング"
+        Filtered["異常値のみ<br/>|funding| >= 0.0001"]
+    end
+
+    subgraph "4. 表示用変換"
+        Display["表示用文字列<br/>FR: '+0.01%'<br/>APR: '+87.60%'"]
+    end
+
+    subgraph "5. メッセージ化"
+        Message["Telegram形式<br/>Markdown + Buttons"]
+    end
+
+    Raw -->|parseFloat| Parsed
+    Parsed -->|filter| Filtered
+    Filtered -->|toFixed + 符号| Display
+    Display -->|formatMessage| Message
+
+    style Raw fill:#ffe1e1
+    style Parsed fill:#fff4e1
+    style Filtered fill:#e1f5ff
+    style Display fill:#f0e1ff
+    style Message fill:#e1ffe1
+```
+
+**変換の流れ:**
+- 文字列 → 数値 → フィルタリング → 表示用文字列 → メッセージオブジェクト
+- 各段階で型安全性を保ちながら、必要な形式に変換
 
 ## 実装のポイント
 
@@ -507,7 +704,52 @@ CMD ["bun", "src/index.ts"]
 
 ## デプロイ手順
 
-### ローカル開発
+このBotは柔軟なデプロイ戦略をサポートしています。環境に応じて最適な方法を選択できます。
+
+### デプロイメントパターン比較
+
+```mermaid
+graph TB
+    subgraph "パターン1: ローカル開発"
+        Local["Bunランタイム<br/>DISABLE_LOOP=false"]
+        LocalLoop["setInterval<br/>(5分ごと)"]
+        Local --> LocalLoop
+    end
+
+    subgraph "パターン2: Docker常時起動"
+        Docker["Dockerコンテナ<br/>DISABLE_LOOP=false"]
+        DockerLoop["setInterval<br/>(5分ごと)"]
+        Docker --> DockerLoop
+    end
+
+    subgraph "パターン3: Cloud Run + Scheduler"
+        CloudRun["Cloud Run<br/>DISABLE_LOOP=true"]
+        Scheduler["Cloud Scheduler<br/>(5分ごと)"]
+        Scheduler -->|"GET /check"| CloudRun
+    end
+
+    style Local fill:#e1f5ff
+    style Docker fill:#fff4e1
+    style CloudRun fill:#e1ffe1
+
+    note1["💻 開発時<br/>コスト: 無料<br/>管理: 手動起動"]
+    note2["🐳 本番運用<br/>コスト: サーバー代<br/>管理: 常時稼働"]
+    note3["☁️ サーバーレス<br/>コスト: 従量課金(月数円)<br/>管理: 自動スケール"]
+
+    Local -.-> note1
+    Docker -.-> note2
+    CloudRun -.-> note3
+```
+
+### パターン別の詳細
+
+| パターン | メリット | デメリット | 推奨環境 |
+|----------|----------|------------|----------|
+| **ローカル開発** | 即座に起動、デバッグ容易 | PC起動中のみ動作 | 開発・テスト |
+| **Docker常時起動** | 環境一貫性、移植性高い | サーバー維持コスト | VPS、自宅サーバー |
+| **Cloud Run + Scheduler** | 従量課金、自動スケール、メンテ不要 | コールドスタート | 本番運用 |
+
+### 1. ローカル開発
 
 ```bash
 # 依存関係のインストール
@@ -521,13 +763,20 @@ cp .env.example .env
 bun run dev
 ```
 
-### Docker Composeで起動
+### 2. Docker Composeで起動
 
 ```bash
+# バックグラウンドで起動
 docker compose up -d
+
+# ログ確認
+docker compose logs -f
+
+# 停止
+docker compose down
 ```
 
-### GCP Cloud Runへのデプロイ
+### 3. GCP Cloud Runへのデプロイ
 
 ```bash
 # Dockerイメージのビルド
@@ -541,6 +790,16 @@ cd terraform
 terraform init
 terraform apply
 ```
+
+**Cloud Runのコスト試算:**
+- リクエスト: 200万回/月まで無料
+- CPU時間: 180,000 vCPU秒/月まで無料
+- メモリ: 360,000 GiB秒/月まで無料
+
+**このBotの場合:**
+- 5分ごと実行 = 月間8,640リクエスト
+- 実行時間約2秒 = 月間17,280秒
+- → **完全に無料枠内で運用可能!** 💰
 
 ## 学びとポイント
 
@@ -619,20 +878,79 @@ Cloud Runは**リクエストがない時は課金されない**ので、Cloud S
 
 今回、Bun + Hono + TypeScriptという最新スタックで、**328行という超コンパクトなコード**で実用的な仮想通貨監視Botを構築しました。
 
+### 技術スタック全体像
+
+```mermaid
+mindmap
+  root((Hyperliquid<br/>FR Bot))
+    ランタイム
+      Bun 1.0+
+        TypeScript Native
+        高速パッケージ管理
+        ホットリロード
+    Webフレームワーク
+      Hono 4.10
+        軽量高速
+        型推論強力
+        マルチランタイム
+    コード品質
+      Biome 2.3
+        Lint + Format
+        超高速 Rust製
+        ゼロコンフィグ
+    インフラ
+      Docker
+        マルチステージビルド
+        Alpine ベース
+      GCP
+        Cloud Run
+        Artifact Registry
+      Terraform
+        IaC
+        バージョン管理
+    外部サービス
+      Hyperliquid API
+        FR取得
+      Telegram Bot API
+        通知送信
+```
+
+### プロジェクトの成果
+
 **技術的ハイライト:**
-- 🚀 Bunによる爆速TypeScript開発体験
-- 🪶 Honoの軽量高速なWebフレームワーク
-- 🎨 Biomeのオールインワンコード品質管理
-- ☁️ Terraformによる完全IaC化
-- 🐳 Dockerマルチステージビルドによる最適化
+- 🚀 **Bunによる爆速TypeScript開発体験** - ビルド設定不要、即座に開発開始
+- 🪶 **Honoの軽量高速なWebフレームワーク** - Expressの1/10のバンドルサイズ
+- 🎨 **Biomeのオールインワンコード品質管理** - 設定ファイル地獄からの解放
+- ☁️ **Terraformによる完全IaC化** - インフラもコードで管理
+- 🐳 **Dockerマルチステージビルドによる最適化** - 本番イメージ約100MB
 
 **設計上のポイント:**
-- 型安全性を重視したAPI連携
-- 関心の分離による保守性向上
-- 柔軟なデプロイモード切り替え
-- インフラのコード化による再現性確保
+- ✅ **型安全性を重視したAPI連携** - バグの早期発見
+- ✅ **関心の分離による保守性向上** - 各モジュール50-155行
+- ✅ **柔軟なデプロイモード切り替え** - 開発から本番まで同じコード
+- ✅ **インフラのコード化による再現性確保** - 環境構築の自動化
+- ✅ **日本語対応の親切な通知** - 初心者にも優しい設計
 
-このプロジェクトは、モダンなTypeScript開発のベストプラクティスを体験できる良い例だと思います。
+### 数字で見る成果
+
+| 指標 | 値 | 備考 |
+|------|-----|------|
+| **総コード行数** | 328行 | アプリケーションロジックのみ |
+| **ファイル数** | 4ファイル | src/配下のTypeScriptファイル |
+| **依存関係** | 8個 | production + dev合計 |
+| **Dockerイメージ** | ~100MB | Alpineベースで最小化 |
+| **月間コスト** | 0円 | Cloud Run無料枠内 |
+| **開発期間** | - | コンパクトで理解しやすい |
+
+このプロジェクトは、**モダンなTypeScript開発のベストプラクティス**を体験できる良い例だと思います。
+
+シンプルながらも:
+- 本番運用に耐える設計
+- スケーラブルなアーキテクチャ
+- メンテナンスしやすいコード構造
+- 低コストで運用可能
+
+を実現しています。
 
 ぜひコードを読んで、自分のプロジェクトに取り入れてみてください!
 
